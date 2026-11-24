@@ -274,16 +274,12 @@ async def nodriver_kham_check_realname_dialog(tab, config_dict):
 
 ## 配置範例
 
+寬宏會員可在設定頁輸入帳密，於可見的 Chrome 視窗預填一次，再手動完成驗證並送出。設定檔不含寬宏帳號或密碼。
+
 ```json
 {
   "homepage": "https://kham.com.tw/application/UTK01/UTK0201_00.aspx?product_id=xxx",
   "webdriver_type": "nodriver",
-  "ticket_account": {
-    "kham": {
-      "account": "your_account",
-      "password": "your_password"
-    }
-  },
   "date_auto_select": {
     "enable": true,
     "date_keyword": "12/25",
@@ -299,9 +295,7 @@ async def nodriver_kham_check_realname_dialog(tab, config_dict):
     "enable": true
   },
   "advanced": {
-    "verbose": true,
-    "kham_account": "your_account",
-    "kham_password": "your_password"
+    "headless": false
   }
 }
 ```

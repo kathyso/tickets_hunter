@@ -2,17 +2,22 @@
 #encoding=utf-8
 import asyncio
 import base64
+import getpass
+import hashlib
 import json
 import os
 import platform
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import warnings
 import webbrowser
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import tornado
 from tornado.web import Application
@@ -67,6 +72,10 @@ CONST_HEARTBEAT_ALIVE_SEC = 30
 CONST_HEARTBEAT_BUSY_SEC = 30
 
 CONST_SERVER_PORT = 16888
+CONST_SETTINGS_ADDRESS = "127.0.0.1"
+CONST_SETTINGS_SESSION_SECONDS = 8 * 60 * 60
+CONST_KHAM_SIGN_IN_URL = "https://kham.com.tw/application/UTK13/UTK1306_.aspx"
+CONST_KHAM_PREFILL_LIMIT = 4096
 
 # Multi-instance profiles: each profile is a full settings.json copy
 # stored under profiles/<name>.json; "default" maps to settings.json.
@@ -75,7 +84,34 @@ CONST_DEFAULT_PROFILE = "default"
 CONST_PROFILE_NAME_RE = r'^[A-Za-z0-9_-]{1,32}$'
 
 def is_valid_profile_name(profile_name):
-    return bool(re.match(CONST_PROFILE_NAME_RE, profile_name))
+    return isinstance(profile_name, str) and re.fullmatch(CONST_PROFILE_NAME_RE, profile_name) is not None
+
+
+def parse_kham_prefill(payload):
+    if not payload or len(payload) > CONST_KHAM_PREFILL_LIMIT:
+        raise ValueError("invalid KHAM prefill payload")
+    data = json.loads(payload)
+    if not isinstance(data, dict) or set(data) != {"account", "password"}:
+        raise ValueError("invalid KHAM prefill fields")
+    account, password = data["account"], data["password"]
+    if not all(isinstance(field, str) and 1 <= len(field) <= 128 and field.isprintable()
+               for field in (account, password)) or not account.strip():
+        raise ValueError("invalid KHAM prefill fields")
+    return account.strip(), password
+
+
+def permits_kham_prefill(config_dict):
+    try:
+        homepage = urlsplit(config_dict["homepage"])
+        official_site = homepage.scheme == "https" and homepage.netloc.lower() in {
+            "kham.com.tw", "kham.com.tw:443", "www.kham.com.tw", "www.kham.com.tw:443",
+        }
+    except (TypeError, ValueError):
+        return False
+    advanced = config_dict["advanced"]
+    return official_site and not (
+        advanced["headless"] or advanced["proxy_server_port"] or advanced.get("mcp_debug_port")
+    )
 
 def get_profile_filepath(profile_name):
     """Resolve a profile name to its config filepath.
@@ -221,7 +257,6 @@ def get_default_config():
     config_dict["accounts"]["cityline_account"] = ""
     config_dict["accounts"]["urbtix_account"] = ""
     config_dict["accounts"]["hkticketing_account"] = ""
-    config_dict["accounts"]["kham_account"] = ""
     config_dict["accounts"]["ticket_account"] = ""
     config_dict["accounts"]["udn_account"] = ""
     config_dict["accounts"]["cpbl_account"] = ""
@@ -233,7 +268,6 @@ def get_default_config():
     config_dict["accounts"]["urbtix_password"] = ""
     config_dict["accounts"]["cityline_password"] = ""
     config_dict["accounts"]["hkticketing_password"] = ""
-    config_dict["accounts"]["kham_password"] = ""
     config_dict["accounts"]["ticket_password"] = ""
     config_dict["accounts"]["udn_password"] = ""
     config_dict["accounts"]["cpbl_password"] = ""
@@ -353,6 +387,18 @@ def migrate_config(config_dict):
     """Migrate old config structure to new structure."""
     if config_dict is None:
         return config_dict
+    if not isinstance(config_dict, dict):
+        return get_default_config()
+
+    for section in ("accounts", "advanced", "ocr_captcha"):
+        if section in config_dict and not isinstance(config_dict[section], dict):
+            del config_dict[section]
+
+    accounts = config_dict.get("accounts")
+    if isinstance(accounts, dict):
+        # KHAM membership IDs and passwords are entered on KHAM itself.
+        accounts.pop("kham_account", None)
+        accounts.pop("kham_password", None)
 
     # Migrate ocr_model_path from advanced to ocr_captcha.path
     if "advanced" in config_dict and "ocr_model_path" in config_dict["advanced"]:
@@ -423,19 +469,6 @@ def load_json(profile_name=""):
 
     return config_filepath, config_dict
 
-def reset_json():
-    app_root = util.get_app_root()
-    config_filepath = os.path.join(app_root, CONST_MAXBOT_CONFIG_FILE)
-    if os.path.exists(str(config_filepath)):
-        try:
-            os.unlink(str(config_filepath))
-        except Exception as exc:
-            print(exc)
-            pass
-
-    config_dict = get_default_config()
-    return config_filepath, config_dict
-
 def maxbot_idle(profile_name=""):
     idle_filepath = get_instance_state_filepath(profile_name, CONST_MAXBOT_INT28_FILE)
     try:
@@ -461,7 +494,11 @@ def maxbot_stop(profile_name=""):
     except Exception as e:
         print(f"[ERROR] Failed to create stop file: {e}")
 
-def launch_maxbot(profile_name="", instance_override=""):
+def launch_maxbot(profile_name="", instance_override="", kham_prefill=None):
+    config_filepath, config_dict = load_json(profile_name)
+    if kham_prefill is not None and not permits_kham_prefill(config_dict):
+        raise ValueError("KHAM prefill requires an official HTTPS homepage and a visible local browser")
+
     global launch_counter
     if "launch_counter" in globals():
         launch_counter += 1
@@ -475,8 +512,6 @@ def launch_maxbot(profile_name="", instance_override=""):
     effective_instance = instance_override if instance_override else profile_name
     util.force_remove_file(get_instance_state_filepath(effective_instance, CONST_MAXBOT_INT28_QUIT_FILE))
     util.force_remove_file(get_instance_state_filepath(effective_instance, CONST_MAXBOT_INT28_FILE))
-
-    config_filepath, config_dict = load_json(profile_name)
 
     script_name = "nodriver_tixcraft"
 
@@ -503,7 +538,14 @@ def launch_maxbot(profile_name="", instance_override=""):
 
     # instance_override (dup-RUN) becomes --instance so a second instance of the
     # same profile gets its own state dir; main() prefers --instance over stem.
-    threading.Thread(target=util.launch_maxbot, args=(script_name,input_filepath,"","","",window_size,), kwargs={"instance": instance_override}).start()
+    launch_args = (script_name, input_filepath, "", "", "", window_size)
+    if kham_prefill is None:
+        threading.Thread(target=util.launch_maxbot, args=launch_args, kwargs={"instance": instance_override}).start()
+    else:
+        account, password = kham_prefill
+        payload = json.dumps({"account": account, "password": password}).encode()
+        util.launch_maxbot(*launch_args, instance=instance_override,
+                           extra_args=("--kham-prefill-stdin",), stdin_payload=payload)
 
 def change_maxbot_status_by_keyword():
     # Per-instance schedule: every profile (incl. default) pauses/resumes its
@@ -570,16 +612,93 @@ def clean_tmp_file():
                 except Exception as e:
                     print(f"[WARNING] Failed to remove orphan instance dir {item}: {e}")
 
-class NoCacheStaticFileHandler(StaticFileHandler):
-    """Custom StaticFileHandler that prevents stale settings UI assets."""
-    def set_extra_headers(self, path):
-        # Keep settings UI assets uncached so help text and translations update immediately.
-        if path in {'settings.html', 'help-content.js', 'settings.js'}:
-            self.set_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-            self.set_header('Pragma', 'no-cache')
-            self.set_header('Expires', '0')
+class SettingsAccess:
+    """One in-memory local settings session, invalidated on unlock or exit."""
 
-class QuestionHandler(tornado.web.RequestHandler):
+    def __init__(self, passphrase):
+        self.passphrase_digest = hashlib.sha256(passphrase.encode()).digest()
+        self.session_token = ""
+        self.session_expires = 0
+        self.failed_attempts = 0
+        self.retry_after = 0
+
+    def unlock(self, passphrase):
+        now = time.monotonic()
+        if now < self.retry_after:
+            raise tornado.web.HTTPError(429)
+
+        if not secrets.compare_digest(self.passphrase_digest, hashlib.sha256(passphrase.encode()).digest()):
+            self.failed_attempts += 1
+            if self.failed_attempts == 5:
+                self.retry_after = now + 30
+                self.failed_attempts = 0
+            raise tornado.web.HTTPError(401)
+
+        self.failed_attempts = 0
+        self.session_token = secrets.token_urlsafe(32)
+        self.session_expires = now + CONST_SETTINGS_SESSION_SECONDS
+        return self.session_token
+
+    def permits(self, authorization):
+        return (
+            time.monotonic() < self.session_expires
+            and secrets.compare_digest(authorization.encode(), f"Bearer {self.session_token}".encode())
+        )
+
+
+class LocalSettingsRequest:
+    def set_default_headers(self):
+        self.set_header("Cache-Control", "no-store")
+        self.set_header("X-Content-Type-Options", "nosniff")
+        self.set_header("X-Frame-Options", "DENY")
+        self.set_header("Referrer-Policy", "no-referrer")
+        self.set_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        )
+
+    def prepare(self):
+        expected_host = self.application.settings["settings_host"]
+        if self.request.host != expected_host:
+            raise tornado.web.HTTPError(403)
+        origin = self.request.headers.get("Origin")
+        if origin == f"http://{expected_host}":
+            return
+        if origin is not None or self.request.method not in {"GET", "HEAD"}:
+            raise tornado.web.HTTPError(403)
+
+
+class SettingsHandler(LocalSettingsRequest, tornado.web.RequestHandler):
+    def prepare(self):
+        super().prepare()
+        access = self.application.settings["settings_access"]
+        if not access.permits(self.request.headers.get("Authorization", "")):
+            raise tornado.web.HTTPError(401)
+
+
+class SettingsStaticFileHandler(LocalSettingsRequest, StaticFileHandler):
+    def get_cache_time(self, path, modified, mime_type):
+        return 0
+
+
+class UnlockHandler(LocalSettingsRequest, tornado.web.RequestHandler):
+    def post(self):
+        try:
+            body = json.loads(self.request.body)
+        except ValueError:
+            raise tornado.web.HTTPError(400) from None
+        passphrase = body.get("passphrase") if isinstance(body, dict) else None
+        if not isinstance(passphrase, str) or not 16 <= len(passphrase) <= 128:
+            raise tornado.web.HTTPError(400)
+
+        access = self.application.settings["settings_access"]
+        try:
+            self.write({"token": access.unlock(passphrase)})
+        except UnicodeError:
+            raise tornado.web.HTTPError(400) from None
+
+class QuestionHandler(SettingsHandler):
     def get(self):
         """Read the instance's MAXBOT_QUESTION.txt and return its content"""
         profile_name = self.get_query_argument("profile", "")
@@ -604,17 +723,17 @@ class QuestionHandler(tornado.web.RequestHandler):
             "question": question_text
         })
 
-class VersionHandler(tornado.web.RequestHandler):
+class VersionHandler(SettingsHandler):
     def get(self):
         self.write({"version":self.application.version})
 
-class ShutdownHandler(tornado.web.RequestHandler):
-    def get(self):
-        global GLOBAL_SERVER_SHUTDOWN
-        GLOBAL_SERVER_SHUTDOWN = True
-        self.write({"showdown": GLOBAL_SERVER_SHUTDOWN})
+class ShutdownHandler(SettingsHandler):
+    def post(self):
+        self.write({"shutdown": True})
+        self.finish()
+        self.application.settings["shutdown_event"].set()
 
-class StatusHandler(tornado.web.RequestHandler):
+class StatusHandler(SettingsHandler):
     def get(self):
         profile_name = self.get_query_argument("profile", "")
         if profile_name and not is_valid_profile_name(profile_name):
@@ -626,7 +745,7 @@ class StatusHandler(tornado.web.RequestHandler):
         url = read_last_url_from_file(profile_name)
         self.write({"status": not is_paused, "last_url": url})
 
-class InstancesHandler(tornado.web.RequestHandler):
+class InstancesHandler(SettingsHandler):
     """Multi-instance overview: one row per instance with liveness, pause
     state and last URL. The dashboard polls this; per-instance pause/resume
     and 'pause all' reuse the existing /pause /resume endpoints per id."""
@@ -634,8 +753,8 @@ class InstancesHandler(tornado.web.RequestHandler):
         instances = [get_instance_status(name) for name in list_instance_ids()]
         self.write({"instances": instances})
 
-class PauseHandler(tornado.web.RequestHandler):
-    def get(self):
+class PauseHandler(SettingsHandler):
+    def post(self):
         profile_name = self.get_query_argument("profile", "")
         if profile_name and not is_valid_profile_name(profile_name):
             self.set_status(400)
@@ -644,8 +763,8 @@ class PauseHandler(tornado.web.RequestHandler):
         maxbot_idle(profile_name)
         self.write({"pause": True})
 
-class ResumeHandler(tornado.web.RequestHandler):
-    def get(self):
+class ResumeHandler(SettingsHandler):
+    def post(self):
         profile_name = self.get_query_argument("profile", "")
         if profile_name and not is_valid_profile_name(profile_name):
             self.set_status(400)
@@ -654,8 +773,8 @@ class ResumeHandler(tornado.web.RequestHandler):
         maxbot_resume(profile_name)
         self.write({"resume": True})
 
-class StopHandler(tornado.web.RequestHandler):
-    def get(self):
+class StopHandler(SettingsHandler):
+    def post(self):
         profile_name = self.get_query_argument("profile", "")
         if profile_name and not is_valid_profile_name(profile_name):
             self.set_status(400)
@@ -664,8 +783,8 @@ class StopHandler(tornado.web.RequestHandler):
         maxbot_stop(profile_name)
         self.write({"stop": True})
 
-class RunHandler(tornado.web.RequestHandler):
-    def get(self):
+class RunHandler(SettingsHandler):
+    def post(self):
         profile_name = self.get_query_argument("profile", "")
         if profile_name and not is_valid_profile_name(profile_name):
             self.set_status(400)
@@ -680,10 +799,21 @@ class RunHandler(tornado.web.RequestHandler):
             return
         display_name = instance_override or profile_name or CONST_DEFAULT_PROFILE
         print('run button pressed. profile:', display_name)
-        launch_maxbot(profile_name, instance_override)
+        try:
+            if self.request.body:
+                credentials = parse_kham_prefill(self.request.body)
+                launch_maxbot(profile_name, instance_override, kham_prefill=credentials)
+            else:
+                launch_maxbot(profile_name, instance_override)
+        except ValueError:
+            self.set_status(400)
+            self.write({"run": False, "error": "KHAM prefill requires both fields and a visible local browser on the official HTTPS site."})
+            return
+        except OSError:
+            raise tornado.web.HTTPError(500) from None
         self.write({"run": True, "profile": display_name})
 
-class LoadJsonHandler(tornado.web.RequestHandler):
+class LoadJsonHandler(SettingsHandler):
     def get(self):
         profile_name = self.get_query_argument("profile", "")
         if profile_name and not is_valid_profile_name(profile_name):
@@ -700,8 +830,8 @@ class LoadJsonHandler(tornado.web.RequestHandler):
 
         self.write(config_dict)
 
-class ResetJsonHandler(tornado.web.RequestHandler):
-    def get(self):
+class ResetJsonHandler(SettingsHandler):
+    def post(self):
         # Reset only applies to the default profile; named profiles are
         # managed via /profiles (delete and recreate instead).
         profile_name = self.get_query_argument("profile", "")
@@ -709,61 +839,46 @@ class ResetJsonHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.write({"error": "reset only supports the default profile"})
             return
-        config_filepath, config_dict = reset_json()
-        util.save_json(config_dict, config_filepath)
+        config_dict = get_default_config()
+        util.save_json(config_dict, get_profile_filepath(profile_name))
         self.write(config_dict)
 
-class SaveJsonHandler(tornado.web.RequestHandler):
+class SaveJsonHandler(SettingsHandler):
     def post(self):
-        _body = None
-        is_pass_check = True
-        error_message = ""
-        error_code = 0
-
-        if is_pass_check:
-            is_pass_check = False
-            try :
-                _body = json.loads(self.request.body)
-                is_pass_check = True
-            except Exception:
-                error_message = "wrong json format"
-                error_code = 1002
-                pass
-
         profile_name = self.get_query_argument("profile", "")
-        if is_pass_check and profile_name and not is_valid_profile_name(profile_name):
-            is_pass_check = False
-            error_message = "invalid profile name"
-            error_code = 1003
+        if profile_name and not is_valid_profile_name(profile_name):
+            raise tornado.web.HTTPError(400)
 
-        if is_pass_check:
-            config_filepath = get_profile_filepath(profile_name)
-            os.makedirs(os.path.dirname(config_filepath), exist_ok=True)
-            config_dict = _body
+        try:
+            body = json.loads(self.request.body)
+        except ValueError:
+            raise tornado.web.HTTPError(400) from None
+        if not isinstance(body, dict):
+            raise tornado.web.HTTPError(400)
 
-            if config_dict["kktix"]["max_dwell_time"] > 0:
-                if config_dict["kktix"]["max_dwell_time"] < 15:
-                    # min value is 15 seconds.
-                    config_dict["kktix"]["max_dwell_time"] = 15
+        config_dict = migrate_config(body)
+        max_dwell_time = config_dict["kktix"]["max_dwell_time"]
+        reset_interval = config_dict["advanced"]["reset_browser_interval"]
+        homepage = config_dict["homepage"]
+        if type(max_dwell_time) not in (int, float) or type(reset_interval) not in (int, float):
+            raise tornado.web.HTTPError(400)
+        if not isinstance(homepage, str):
+            raise tornado.web.HTTPError(400)
 
-            if config_dict["advanced"]["reset_browser_interval"] > 0:
-                if config_dict["advanced"]["reset_browser_interval"] < 20:
-                    # min value is 20 seconds.
-                    config_dict["advanced"]["reset_browser_interval"] = 20
+        if 0 < max_dwell_time < 15:
+            config_dict["kktix"]["max_dwell_time"] = 15
+        if 0 < reset_interval < 20:
+            config_dict["advanced"]["reset_browser_interval"] = 20
+        if ".cityline.com" in homepage:
+            config_dict["webdriver_type"] = CONST_WEBDRIVER_TYPE_NODRIVER
 
-            # due to cloudflare.
-            if ".cityline.com" in config_dict["homepage"]:
-                config_dict["webdriver_type"] = CONST_WEBDRIVER_TYPE_NODRIVER
+        config_filepath = get_profile_filepath(profile_name)
+        os.makedirs(os.path.dirname(config_filepath), mode=0o700, exist_ok=True)
+        util.save_json(config_dict, config_filepath)
+        self.write({"success": True})
 
-            util.save_json(config_dict, config_filepath)
 
-        if not is_pass_check:
-            self.set_status(401)
-            self.write(dict(error=dict(message=error_message,code=error_code)))
-
-        self.finish()
-
-class ProfilesHandler(tornado.web.RequestHandler):
+class ProfilesHandler(SettingsHandler):
     """Manage instance profiles (full settings.json copies under profiles/)."""
 
     def get(self):
@@ -785,7 +900,9 @@ class ProfilesHandler(tornado.web.RequestHandler):
         config is optional; falls back to current settings.json content."""
         try:
             _body = json.loads(self.request.body)
-        except Exception:
+        except ValueError:
+            _body = None
+        if not isinstance(_body, dict):
             self.set_status(400)
             self.write({"success": False, "error": "wrong json format"})
             return
@@ -807,7 +924,7 @@ class ProfilesHandler(tornado.web.RequestHandler):
             _, config_dict = load_json()
         config_dict = migrate_config(config_dict)
 
-        os.makedirs(os.path.dirname(config_filepath), exist_ok=True)
+        os.makedirs(os.path.dirname(config_filepath), mode=0o700, exist_ok=True)
         util.save_json(config_dict, config_filepath)
         self.write({"success": True, "profile": profile_name})
 
@@ -830,37 +947,7 @@ class ProfilesHandler(tornado.web.RequestHandler):
             return
         self.write({"success": True})
 
-class SendkeyHandler(tornado.web.RequestHandler):
-    def post(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Headers", "x-requested-with")
-        self.set_header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
-
-        _body = None
-        is_pass_check = True
-        errorMessage = ""
-        errorCode = 0
-
-        if is_pass_check:
-            is_pass_check = False
-            try :
-                _body = json.loads(self.request.body)
-                is_pass_check = True
-            except Exception:
-                errorMessage = "wrong json format"
-                errorCode = 1001
-                pass
-
-        if is_pass_check:
-            app_root = util.get_app_root()
-            if "token" in _body:
-                tmp_file = _body["token"] + ".tmp"
-                config_filepath = os.path.join(app_root, tmp_file)
-                util.save_json(_body, config_filepath)
-
-        self.write({"return": True})
-
-class TestDiscordWebhookHandler(tornado.web.RequestHandler):
+class TestDiscordWebhookHandler(SettingsHandler):
     ALLOWED_HOSTS = ("discord.com", "discordapp.com")
 
     def post(self):
@@ -915,7 +1002,7 @@ class TestDiscordWebhookHandler(tornado.web.RequestHandler):
             debug.log("[Discord Webhook] Test failed: %s" % str(exc))
             self.write({"success": False, "message": str(exc)})
 
-class TestTelegramHandler(tornado.web.RequestHandler):
+class TestTelegramHandler(SettingsHandler):
     def post(self):
         try:
             body = json.loads(self.request.body)
@@ -982,15 +1069,11 @@ class TestTelegramHandler(tornado.web.RequestHandler):
             debug.log("[Telegram] Test failed: %s" % msg)
             self.write({"success": False, "message": msg})
 
-class OcrHandler(tornado.web.RequestHandler):
+class OcrHandler(SettingsHandler):
     def get(self):
         self.write({"answer": "1234"})
 
     def post(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-        self.set_header("Access-Control-Allow-Headers", "x-requested-with")
-        self.set_header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
-
         _body = None
         is_pass_check = True
         errorMessage = ""
@@ -1030,7 +1113,7 @@ class OcrHandler(tornado.web.RequestHandler):
 
         self.write({"answer": ocr_answer})
 
-class QueryHandler(tornado.web.RequestHandler):
+class QueryHandler(SettingsHandler):
     def format_config_keyword_for_json(self, user_input):
         if len(user_input) > 0:
             # Remove any existing quotes first
@@ -1060,59 +1143,58 @@ class QueryHandler(tornado.web.RequestHandler):
         #print("answer_text_output:", answer_text_output)
         self.write(answer_text_output)
 
-async def main_server():
-    ocr = None
-    try:
-        ocr = ddddocr.DdddOcr(show_ad=False, beta=True)
-    except Exception as exc:
-        print(exc)
-        pass
-
+def create_settings_application(server_port, access, shutdown_event):
     app = Application([
+        ("/unlock", UnlockHandler),
         ("/version", VersionHandler),
         ("/shutdown", ShutdownHandler),
-        ("/sendkey", SendkeyHandler),
-
-        # status api
         ("/status", StatusHandler),
         ("/instances", InstancesHandler),
         ("/pause", PauseHandler),
         ("/resume", ResumeHandler),
         ("/stop", StopHandler),
         ("/run", RunHandler),
-        
-        # json api
         ("/load", LoadJsonHandler),
         ("/save", SaveJsonHandler),
         ("/reset", ResetJsonHandler),
         ("/profiles", ProfilesHandler),
-
         ("/test_discord_webhook", TestDiscordWebhookHandler),
         ("/test_telegram", TestTelegramHandler),
         ("/ocr", OcrHandler),
         ("/query", QueryHandler),
         ("/question", QuestionHandler),
-        ('/(.*)', NoCacheStaticFileHandler, {"path": os.path.join(SCRIPT_DIR, 'www')}),
-    ])
-    app.ocr = ocr;
-    app.version = CONST_APP_VERSION;
+        (r"/(.*)", SettingsStaticFileHandler, {"path": os.path.join(SCRIPT_DIR, "www")}),
+    ], settings_host=f"{CONST_SETTINGS_ADDRESS}:{server_port}", settings_access=access,
+        shutdown_event=shutdown_event)
+    app.ocr = None
+    app.version = CONST_APP_VERSION
+    return app
 
-    # Get server_port from config, fallback to default (Issue #156)
-    _, config_dict = load_json()
-    server_port = config_dict.get("advanced", {}).get("server_port", CONST_SERVER_PORT)
 
-    # Validate port range
-    if not isinstance(server_port, int) or server_port < 1024 or server_port > 65535:
-        print(f"[WARNING] Invalid server_port: {server_port}, using default: {CONST_SERVER_PORT}")
-        server_port = CONST_SERVER_PORT
+async def main_server(access):
+    server_port = get_server_port()
+    shutdown_event = asyncio.Event()
+    stop_timer = threading.Event()
+    app = create_settings_application(server_port, access, shutdown_event)
+    server = app.listen(server_port, address=CONST_SETTINGS_ADDRESS, max_body_size=2 * 1024 * 1024)
+    try:
+        clean_tmp_file()
+        try:
+            app.ocr = ddddocr.DdddOcr(show_ad=False, beta=True)
+        except Exception:
+            pass
 
-    app.listen(server_port)
-    print("server running on port:", server_port)
+        threading.Thread(target=settings_gui_timer, args=(stop_timer,), daemon=True).start()
+        url = f"http://{CONST_SETTINGS_ADDRESS}:{server_port}/settings.html"
+        print(f"設定介面：{url}")
+        print("按 Ctrl+C 關閉設定介面。")
+        webbrowser.open_new(url)
+        await shutdown_event.wait()
+    finally:
+        stop_timer.set()
+        server.stop()
+        await server.close_all_connections()
 
-    url = "http://127.0.0.1:" + str(server_port) + "/settings.html"
-    print("goto url:", url)
-    webbrowser.open_new(url)
-    await asyncio.Event().wait()
 
 def get_server_port():
     """Get server port from config file, fallback to default."""
@@ -1122,34 +1204,30 @@ def get_server_port():
         server_port = CONST_SERVER_PORT
     return server_port
 
-def web_server():
-    server_port = get_server_port()
-    is_port_binded = util.is_connectable(server_port)
-    #print("is_port_binded:", is_port_binded)
-    if not is_port_binded:
-        asyncio.run(main_server())
-    else:
-        print("port:", server_port, " is in used.")
-
-def settgins_gui_timer():
-    while True:
+def settings_gui_timer(stop_timer):
+    while not stop_timer.wait(0.4):
         change_maxbot_status_by_keyword()
-        time.sleep(0.4)
-        if GLOBAL_SERVER_SHUTDOWN:
-            break
+
+
+def prompt_for_settings_access():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        while True:
+            passphrase = getpass.getpass("請設定本次啟動的本機解鎖密語（16–128 字元，請勿使用票務密碼）：")
+            if not 16 <= len(passphrase) <= 128 or not passphrase.strip():
+                print("請輸入 16–128 字元的本機解鎖密語。")
+                continue
+            if passphrase == getpass.getpass("請再輸入一次本機解鎖密語："):
+                return SettingsAccess(passphrase)
+            print("兩次輸入的本機解鎖密語不同。")
+
 
 if __name__ == "__main__":
-    global GLOBAL_SERVER_SHUTDOWN
-    GLOBAL_SERVER_SHUTDOWN = False
-    
-    threading.Thread(target=settgins_gui_timer, daemon=True).start()
-    threading.Thread(target=web_server, daemon=True).start()
-    
-    clean_tmp_file()
-
-    print("To exit web server press Ctrl + C.")
-    while True:
-        time.sleep(0.4)
-        if GLOBAL_SERVER_SHUTDOWN:
-            break
-    print("Bye bye, see you next time.")
+    try:
+        asyncio.run(main_server(prompt_for_settings_access()))
+    except KeyboardInterrupt:
+        pass
+    except (EOFError, getpass.GetPassWarning):
+        sys.exit("請從可安全輸入密語的互動式終端機啟動設定介面。")
+    except OSError:
+        sys.exit("無法啟動本機設定介面。請確認設定連接埠與檔案權限。")

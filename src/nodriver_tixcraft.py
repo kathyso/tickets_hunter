@@ -9,12 +9,10 @@ import os
 import pathlib
 import platform
 import random
-import ssl
 import subprocess
 import sys
 import threading
 import time
-import warnings
 import webbrowser
 from datetime import datetime
 
@@ -27,7 +25,6 @@ if sys.platform == 'win32':
 
 import zendriver as uc
 from zendriver import cdp
-from urllib3.exceptions import InsecureRequestWarning
 import urllib.parse
 
 import util
@@ -58,14 +55,11 @@ CONST_CITYLINE_HK_SIGN_IN_URL = "https://www.cityline.com.hk/Login.html?targetUr
 CONST_FAMI_SIGN_IN_URL = "https://www.famiticket.com.tw/Home/User/SignIn"
 CONST_HKTICKETING_SIGN_IN_URL = "https://premier.hkticketing.com/Secure/ShowLogin.aspx"
 CONST_HKTICKETING_TYPE02_SIGN_IN_URL = "https://hkt.hkticketing.com/hant/#/login"
-CONST_KHAM_SIGN_IN_URL = "https://kham.com.tw/application/UTK13/UTK1306_.aspx"
 CONST_KKTIX_SIGN_IN_URL = "https://kktix.com/users/sign_in?back_to=%s"
 CONST_TICKET_SIGN_IN_URL = "https://ticket.com.tw/application/utk13/utk1306_.aspx"
 CONST_UDN_SIGN_IN_URL = "https://tickets.udnfunlife.com/application/UTK01/UTK0101_.aspx"
 CONST_URBTIX_SIGN_IN_URL = "https://www.urbtix.hk/member-login"
 
-warnings.simplefilter('ignore',InsecureRequestWarning)
-ssl._create_default_https_context = ssl._create_unverified_context
 logging.basicConfig()
 logger = logging.getLogger('logger')
 
@@ -91,10 +85,6 @@ async def nodriver_goto_homepage(driver, config_dict):
     if 'famiticket.com' in homepage:
         if len(config_dict["accounts"]["fami_account"])>0:
             homepage = CONST_FAMI_SIGN_IN_URL
-
-    if 'kham.com' in homepage:
-        if len(config_dict["accounts"]["kham_account"])>0:
-            homepage = CONST_KHAM_SIGN_IN_URL
 
     if 'ticket.com.tw' in homepage:
         if len(config_dict["accounts"]["ticket_account"])>0:
@@ -717,7 +707,7 @@ async def reload_config(config_dict, last_mtime, config_filepath):
 
     return config_dict, last_mtime
 
-async def main(args):
+async def main(args, kham_prefill=None):
     # Derive instance id for multi-instance isolation:
     # --instance > --input filename stem > "default".
     # A config named settings.json always maps to "default" (legacy single-run).
@@ -789,7 +779,20 @@ async def main(args):
             initial_tab = driver.main_tab
             if initial_tab:
                 await nodrver_block_urls(initial_tab, config_dict)
-            tab = await nodriver_goto_homepage(driver, config_dict)
+            if kham_prefill and not (args.mcp_connect or args.mcp_debug) and settings.permits_kham_prefill(config_dict):
+                try:
+                    tab = await driver.get(settings.CONST_KHAM_SIGN_IN_URL)
+                    if not await nodriver_kham_prefill_login(tab, *kham_prefill):
+                        print("無法預填寬宏登入表單，請手動輸入。")
+                except Exception:
+                    print("無法預填寬宏登入表單，請手動輸入。")
+                finally:
+                    kham_prefill = None
+            else:
+                if kham_prefill:
+                    print("目前的瀏覽器設定無法預填寬宏登入表單，請手動輸入。")
+                    kham_prefill = None
+                tab = await nodriver_goto_homepage(driver, config_dict)
             if tab is None:
                 print("[ERROR] Homepage navigation failed. Cannot continue.")
                 sys.exit()
@@ -1107,6 +1110,14 @@ def run_ocr_self_test():
     return 0
 
 
+def read_kham_prefill():
+    try:
+        payload = sys.stdin.buffer.read(settings.CONST_KHAM_PREFILL_LIMIT + 1)
+        return settings.parse_kham_prefill(payload)
+    except (OSError, ValueError):
+        sys.exit("無法讀取寬宏登入預填資料。請從設定介面重新啟動。")
+
+
 def cli():
     parser = argparse.ArgumentParser(
             description="MaxBot Aggument Parser")
@@ -1179,11 +1190,12 @@ def cli():
     parser.add_argument("--self-test",
         action="store_true",
         help=argparse.SUPPRESS)
+    parser.add_argument("--kham-prefill-stdin", action="store_true", help=argparse.SUPPRESS)
 
     args = parser.parse_args()
     if args.self_test:
         sys.exit(run_ocr_self_test())
-    asyncio.run(main(args))
+    asyncio.run(main(args, read_kham_prefill() if args.kham_prefill_stdin else None))
 
 if __name__ == "__main__":
     cli()

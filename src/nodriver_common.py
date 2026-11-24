@@ -55,7 +55,6 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 CLOUDFLARE_BYPASS_MODE = "auto"
 CLOUDFLARE_MAX_RETRY = 3         # max retry count
 CLOUDFLARE_WAIT_TIME = 3         # wait time after each attempt (seconds)
-CLOUDFLARE_ENABLE_EXPERT_MODE = False  # True enables more aggressive browser args
 
 # Horizontal position of the Turnstile checkbox within its iframe, as a
 # fraction of the widget width, vertically centered. Measured from the iframe
@@ -1271,13 +1270,13 @@ def get_nodriver_browser_args():
         "--disable-background-networking",
         "--disable-backgrounding-occluded-windows",
         "--disable-breakpad",
-        "--disable-component-update",
         "--disable-default-apps",
         "--disable-dev-shm-usage",
         "--disable-device-discovery-notifications",
         "--disable-dinosaur-easter-egg",
         "--disable-domain-reliability",
-        "--disable-features=IsolateOrigins,site-per-process,TranslateUI",
+        "--disable-features=TranslateUI",
+        "--site-per-process",  # Keep site isolation enabled with Zendriver's default arguments.
         "--disable-infobars",
         "--disable-logging",
         "--disable-login-animations",
@@ -1297,19 +1296,11 @@ def get_nodriver_browser_args():
         "--no-first-run",
         "--no-pings",
         "--no-service-autorun",
+        "--remote-allow-origins=",  # Reject WebSocket connections from browser page origins.
         "--password-store=basic",
         # Note: --remote-debugging-host is managed by Config(host=...) when MCP debug is enabled
         "--lang=zh-TW",
     ]
-
-    # Expert mode: cautiously add high-risk args
-    if CLOUDFLARE_ENABLE_EXPERT_MODE:
-        # Warning: these args may increase detection risk but provide stronger bypass
-        expert_args = [
-            "--no-sandbox",  # needed in some environments, detection risk
-            "--disable-web-security",  # high risk but effective
-        ]
-        browser_args.extend(expert_args)
 
     return browser_args
 

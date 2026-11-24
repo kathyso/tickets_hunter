@@ -212,15 +212,11 @@ viewport 內。按鈕在摺線以下時 rect 仍會回傳值，對那個座標�
 
 ### KHAM / ticket.com.tw / UDN
 
-`nodriver_kham_login()` 處理 KHAM 系列登入，特點是需要 OCR 驗證碼：
+寬宏會員可在解鎖設定頁輸入帳密，啟動時預填一次。帳密透過子程序的標準輸入傳送，只在官方 HTTPS 登入頁預填。設定檔不保存帳密，驗證及送出由會員操作。
 
-1. 填寫 `#ACCOUNT`（帳號）與密碼欄位
-2. 使用 `ddddocr` OCR 辨識驗證碼圖片
-3. 填入驗證碼並送出
+UDN 為半自動登入：程式使用 `nodriver_kham_login()` 填寫帳密，reCAPTCHA 圖片驗證需使用者手動完成。年代售票仍使用自己的登入函式 `nodriver_ticket_login()`。
 
-UDN 為半自動登入：程式填寫帳密，但 reCAPTCHA 圖片驗證需使用者手動完成。
-
-**實作位置**：`src/platforms/kham.py`（nodriver_kham_login）
+**實作位置**：`src/platforms/kham.py`
 
 ### 中職售票（登入彈窗）
 
@@ -283,7 +279,6 @@ UDN 為半自動登入：程式填寫帳密，但 reCAPTCHA 圖片驗證需使�
 |------|---------|--------------|
 | KKTIX | `kktix.c` in homepage + 有帳號 | `CONST_KKTIX_SIGN_IN_URL` |
 | FamiTicket | `famiticket.com` + 有帳號 | `CONST_FAMI_SIGN_IN_URL` |
-| KHAM | `kham.com` + 有帳號 | `CONST_KHAM_SIGN_IN_URL` |
 | ticket.com.tw | `ticket.com.tw` + 有帳號 | `CONST_TICKET_SIGN_IN_URL` |
 | UDN | `udnfunlife.com` + 有帳號 | `CONST_UDN_SIGN_IN_URL` |
 | URBTIX | `urbtix.hk` + 有帳號 | `CONST_URBTIX_SIGN_IN_URL` |

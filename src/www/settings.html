@@ -998,16 +998,19 @@
         </div>
 
         <div class="row mb-3" data-under="kham">
-          <label for="kham_account" class="col-sm-2 col-form-label">寬宏</label>
+          <label class="col-sm-2 col-form-label" for="kham_prefill_account">寬宏</label>
           <div class="col-sm-10 col-lg-8 col-xl-6">
-            <form autocomplete="off">
             <div class="input-group">
-              <span class="input-group-text" id="inputGroup-sizing-default">帳號</span>
-              <input type="text" id="kham_account" value="" class="form-control" autocomplete="username">
-              <span class="input-group-text" id="inputGroup-sizing-default">密碼</span>
-              <input type="password" id="kham_password" value="" class="form-control" autocomplete="current-password">
+              <label class="input-group-text" for="kham_prefill_account" id="kham-account-label">帳號</label>
+              <input class="form-control" id="kham_prefill_account" type="text" maxlength="128"
+                     autocomplete="off" aria-describedby="kham-login-note">
+              <label class="input-group-text" for="kham_prefill_password" id="kham-password-label">密碼</label>
+              <input class="form-control" id="kham_prefill_password" type="password" maxlength="128"
+                     autocomplete="off" aria-describedby="kham-login-note">
             </div>
-            </form>
+            <p class="form-text" id="kham-login-note">
+              選填。按「搶票」時預填一次，帳號及密碼不會儲存。請在寬宏網站手動完成驗證並送出。
+            </p>
           </div>
         </div>
 
@@ -1337,6 +1340,6 @@
 </div>
 
   <script src="help-content.js?v=2026111116"></script>
-  <script src="settings.js?v=2026111116"></script>
+  <script src="settings.js?v=20261125-prefill"></script>
 </body>
 </html>

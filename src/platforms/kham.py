@@ -31,12 +31,14 @@ from nodriver_common import (
     send_discord_notification,
     send_telegram_notification,
     write_question_to_file,
+    CONST_NATIVE_INPUT_SETTER_JS,
     CONST_FROM_TOP_TO_BOTTOM,
     CONST_MAXBOT_ANSWER_ONLINE_FILE,
     CONST_MAXBOT_INT28_FILE,
 )
 
 __all__ = [
+    "nodriver_kham_prefill_login",
     "nodriver_kham_login",
     "nodriver_kham_go_buy_redirect",
     "nodriver_kham_check_realname_dialog",
@@ -514,6 +516,43 @@ async def nodriver_utk_rwd_assign_ticket_number(tab, url, config_dict):
 # ====================================================================================
 # Kham Platform (kham.com.tw / ticket.com.tw / udnfunlife.com)
 # ====================================================================================
+
+async def nodriver_kham_prefill_login(tab, account, password):
+    if not await tab.select("#ACCOUNT", timeout=8):
+        return False
+
+    document, _ = await asyncio.wait_for(
+        asyncio.shield(tab.send(cdp.runtime.evaluate(expression="document"))), timeout=5
+    )
+    if document.object_id is None:
+        return False
+
+    # Bind the call to this document and pass values as data, outside the JavaScript source.
+    result, error = await asyncio.wait_for(asyncio.shield(tab.send(cdp.runtime.call_function_on(
+        object_id=document.object_id,
+        function_declaration="""
+        function(account, password) {
+            if (this !== document || window !== window.top ||
+                !['https://kham.com.tw', 'https://www.kham.com.tw'].includes(location.origin) ||
+                location.pathname.toLowerCase() !== '/application/utk13/utk1306_.aspx') return false;
+
+            const login = this.querySelector('#ACCOUNT');
+            const secret = this.querySelector('table.login input[type="password"]');
+            if (!login?.form || secret?.form !== login.form ||
+                login.type !== 'text' || login.disabled || secret.disabled ||
+                login.readOnly || secret.readOnly || login.value || secret.value) return false;
+            const action = new URL(login.form.action);
+            if (login.form.method !== 'post' || action.origin !== location.origin) return false;
+
+            """ + CONST_NATIVE_INPUT_SETTER_JS + """
+            return setNativeInputValue(login, account) && setNativeInputValue(secret, password);
+        }
+        """,
+        arguments=[cdp.runtime.CallArgument(value=account), cdp.runtime.CallArgument(value=password)],
+        return_by_value=True,
+    ))), timeout=5)
+    return error is None and result.value is True
+
 
 async def nodriver_kham_login(tab, account, password, ocr=None, config_dict=None):
     """
@@ -3426,6 +3465,10 @@ async def nodriver_kham_main(tab, url, config_dict, ocr):
                             traceback.print_exc()
 
         # Login page handling (UTK1306)
+        if '/utk13/utk1306_.aspx' in url.lower() and domain_name in {"kham.com.tw", "www.kham.com.tw"}:
+            # Leave the KHAM sign-in page entirely to the member.
+            return tab
+
         if '/utk13/utk1306_.aspx' in url.lower():
             # Close dialog buttons
             try:
@@ -3450,15 +3493,6 @@ async def nodriver_kham_main(tab, url, config_dict, ocr):
                     if len(udn_account) > 4:
                         debug.log(f"[UDN LOGIN] Attempting login with account: {udn_account[:3]}***")
                         await nodriver_kham_login(tab, udn_account, udn_password, ocr, config_dict=config_dict)
-
-                # Each account is filled only on its own site: the RWD team sites
-                # are normalized onto this same login URL, and must never receive
-                # KHAM or ticket.com.tw credentials.
-                # Kham login
-                kham_account = config_dict["accounts"]["kham_account"]
-                kham_password = config_dict["accounts"]["kham_password"].strip()
-                if len(kham_account) > 4 and domain_name.endswith('kham.com.tw'):
-                    await nodriver_kham_login(tab, kham_account, kham_password, ocr, config_dict=config_dict)
 
                 # Ticket.com.tw login
                 ticket_account = config_dict["accounts"]["ticket_account"]

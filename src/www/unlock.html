@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>解鎖 Tickets Hunter</title>
+  <link rel="stylesheet" href="/dist/bootstrap/bootstrap.min.css">
+</head>
+<body>
+  <main class="container py-5" style="max-width: 30rem">
+    <h1 class="h3 mb-4">解鎖 Tickets Hunter</h1>
+    <form id="unlock-form" method="post" action="/unlock">
+      <label class="form-label" for="passphrase">本機解鎖密語</label>
+      <input class="form-control" id="passphrase" type="password" required
+             minlength="16" maxlength="128" autocomplete="off" aria-describedby="unlock-help">
+      <p class="form-text" id="unlock-help">請輸入啟動時在終端機設定的密語。</p>
+      <button class="btn btn-primary" type="submit">解鎖</button>
+      <p class="text-danger mt-3" id="unlock-error" role="alert"></p>
+    </form>
+  </main>
+  <script>
+    const unlockForm = document.querySelector('#unlock-form');
+    const passphraseField = document.querySelector('#passphrase');
+    const unlockButton = unlockForm.querySelector('button');
+    const unlockError = document.querySelector('#unlock-error');
+
+    unlockForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        unlockButton.disabled = true;
+        unlockError.textContent = '';
+
+        try {
+            const body = JSON.stringify({ passphrase: passphraseField.value });
+            passphraseField.value = '';
+            const response = await fetch('/unlock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body
+            });
+            if (!response.ok) {
+                unlockError.textContent = response.status === 429
+                    ? '嘗試次數過多，請稍候再試。'
+                    : '無法解鎖，請確認本機密語後再試。';
+                return;
+            }
+            const { token } = await response.json();
+            sessionStorage.setItem('ticketsHunter.settingsSession', token);
+            window.location.replace('/settings.html');
+        } catch {
+            unlockError.textContent = '無法連線至本機設定介面。請確認程式仍在執行。';
+        } finally {
+            unlockButton.disabled = false;
+            passphraseField.focus();
+        }
+    });
+  </script>
+</body>
+</html>

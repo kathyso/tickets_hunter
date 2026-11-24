@@ -1213,13 +1213,16 @@ iBon 的 Cookie qware，用於快速登入。
 
 ### 帳號密碼設定
 
+啟動設定程式時，請先在終端機設定一組與票務帳號不同的本機解鎖密語，再於自動開啟的設定頁輸入。密語只用於這次啟動。解鎖權限會在八小時後失效，或在重新解鎖或結束程式時撤銷。
+
+**寬宏（KHAM）**：解鎖設定頁後，可在「自動填入」輸入帳號及密碼，按「搶票」時會在可見的 Chrome 視窗預填一次。帳密不會隨設定檔儲存。請在寬宏官方網站手動完成驗證、按下登入並自行付款。若舊版設定檔曾儲存寬宏帳密，請重新儲存該設定檔以移除舊欄位，並至寬宏變更曾儲存的密碼。
+
 支援多個平台的帳號密碼設定：
 
 | 平台 | 帳號欄位 | 密碼欄位 | 圖形介面顯示 |
 |------|---------|---------|-------------|
 | KKTIX | kktix_account | kktix_password | KKTIX 帳號 / KKTIX 密碼 |
 | TicketPlus | ticketplus_account | ticketplus_password | 遠大 帳號 / 遠大 密碼 |
-| KHAM | kham_account | kham_password | 寬宏 帳號 / 寬宏 密碼 |
 | Cityline | cityline_account | cityline_password | cityline 帳號 / cityline 密碼 |
 | 年代 | ticket_account | ticket_password | 年代 帳號 / 年代 密碼 |
 | HKTicketing | hkticketing_account | hkticketing_password | HKTICKETING 帳號 / HKTICKETING 密碼 |

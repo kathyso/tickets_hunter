@@ -1,3 +1,24 @@
+const settingsSessionKey = 'ticketsHunter.settingsSession';
+
+function requireSettingsUnlock() {
+    sessionStorage.removeItem(settingsSessionKey);
+    window.location.replace('/unlock.html');
+}
+
+if (!sessionStorage.getItem(settingsSessionKey)) {
+    requireSettingsUnlock();
+}
+
+$.ajaxPrefilter(function(options, originalOptions, xhr) {
+    if (!options.crossDomain) {
+        const token = sessionStorage.getItem(settingsSessionKey);
+        if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    }
+});
+
+$(document).ajaxError(function(event, xhr) {
+    if (xhr.status === 401) requireSettingsUnlock();
+});
 
 // action bar
 const run_button = document.querySelector('#run_btn');
@@ -79,7 +100,8 @@ const fansigo_password = document.querySelector('#fansigo_password');
 const facebook_account = document.querySelector('#facebook_account');
 const kktix_account = document.querySelector('#kktix_account');
 const fami_account = document.querySelector('#fami_account');
-const kham_account = document.querySelector('#kham_account');
+const khamPrefillAccount = document.querySelector('#kham_prefill_account');
+const khamPrefillPassword = document.querySelector('#kham_prefill_password');
 const ticket_account = document.querySelector('#ticket_account');
 const udn_account = document.querySelector('#udn_account');
 const cpbl_account = document.querySelector('#cpbl_account');
@@ -91,7 +113,6 @@ const hkticketing_account = document.querySelector('#hkticketing_account');
 const facebook_password = document.querySelector('#facebook_password');
 const kktix_password = document.querySelector('#kktix_password');
 const fami_password = document.querySelector('#fami_password');
-const kham_password = document.querySelector('#kham_password');
 const ticket_password = document.querySelector('#ticket_password');
 const udn_password = document.querySelector('#udn_password');
 const cpbl_password = document.querySelector('#cpbl_password');
@@ -643,7 +664,6 @@ function renderAutofillTabTranslations() {
     setInputGroupTexts('facebook_account', ['Account', 'Password']);
     setInputGroupTexts('kktix_account', ['Account', 'Password']);
     setInputGroupTexts('fami_account', ['Account', 'Password']);
-    setInputGroupTexts('kham_account', ['Account', 'Password']);
     setInputGroupTexts('ticket_account', ['Account', 'Password']);
     setInputGroupTexts('udn_account', ['Account', 'Password']);
     setInputGroupTexts('cpbl_account', ['Account (ID or passport no.)', 'Password']);
@@ -657,7 +677,9 @@ function renderAutofillTabTranslations() {
     setRowLabelForField('facebook_account', 'Facebook');
     setRowLabelForField('kktix_account', 'KKTIX');
     setRowLabelForField('fami_account', 'FamiTicket');
-    setRowLabelForField('kham_account', 'Kham');
+    applyOrRestore('#kham-account-label', 'textContent', 'Account');
+    applyOrRestore('#kham-password-label', 'textContent', 'Password');
+    applyOrRestore('#kham-login-note', 'textContent', 'Optional. Run fills these fields once without saving them. Complete verification and submit on KHAM.');
     setRowLabelForField('ticket_account', 'Ticket.com.tw');
     setRowLabelForField('udn_account', 'UDN');
     setRowLabelForField('cpbl_account', 'CPBL ticketing');
@@ -925,6 +947,7 @@ function refresh_profile_tabs(callback) {
 
 function switch_profile(name) {
     if (name === current_profile) return;
+    clearKhamPrefill();
     current_profile = name;
     localStorage.setItem(PROFILE_STORAGE_KEY, name);
     // Reset question alert so the new tab's pending question shows immediately
@@ -1007,6 +1030,7 @@ function create_profile(name, homepage) {
     $.ajax({
         url: '/profiles',
         method: 'POST',
+        contentType: 'application/json',
         data: JSON.stringify({ name: name, config: cfg })
     }).done(function() {
         $('#profile_modal').modal('hide');
@@ -1104,7 +1128,6 @@ const PLATFORM_MAP = [
     { key: 'kktix',       domains: ['kktix.com', 'kktix.cc'] },
     { key: 'ibon',        domains: ['ibon.com'] },
     { key: 'famiticket',  domains: ['famiticket.com'] },
-    { key: 'kham',        domains: ['kham.com.tw'] },
     { key: 'ticket',      domains: ['ticket.com.tw'] },
     { key: 'udn',         domains: ['udnfunlife.com'] },
     { key: 'cpbl',        domains: ['tix.ctbcsports.com', 'tix.wdragons.com', 'guardians.fami.life', 'tix.fubonbraves.com'] },
@@ -1118,6 +1141,13 @@ const PLATFORM_MAP = [
 
 function detectPlatform(url) {
     if (!url) return null;
+    try {
+        const candidate = new URL(url);
+        if (['https://kham.com.tw', 'https://www.kham.com.tw'].includes(candidate.origin)
+            && !candidate.username && !candidate.password) return 'kham';
+    } catch {
+        // Other platform checks also support a partially typed address.
+    }
     for (const platform of PLATFORM_MAP) {
         if (platform.domains.some(d => url.includes(d))) {
             return platform.key;
@@ -1134,6 +1164,7 @@ function updatePlatformFields(url) {
         updateTixcraftSoftBlockDelayVisibility(url);
         return;
     }
+    if (_lastPlatform === 'kham') clearKhamPrefill();
     _lastPlatform = platform;
     const fields = $('[data-under]').addClass('disappear');
     if (platform) {
@@ -1241,6 +1272,7 @@ function updateReloadRangeUi() {
 
 function load_settins_to_form(settings)
 {
+    clearKhamPrefill();
     if (settings)
     {
         const normalizedLanguage = normalizeLanguage(settings.language);
@@ -1346,7 +1378,6 @@ function load_settins_to_form(settings)
         facebook_account.value = settings.accounts.facebook_account;
         kktix_account.value = settings.accounts.kktix_account;
         fami_account.value = settings.accounts.fami_account;
-        kham_account.value = settings.accounts.kham_account;
         ticket_account.value = settings.accounts.ticket_account;
         udn_account.value = settings.accounts.udn_account;
         cpbl_account.value = settings.accounts.cpbl_account || '';
@@ -1358,7 +1389,6 @@ function load_settins_to_form(settings)
         facebook_password.value = settings.accounts.facebook_password;
         kktix_password.value = settings.accounts.kktix_password;
         fami_password.value = settings.accounts.fami_password;
-        kham_password.value = settings.accounts.kham_password;
         ticket_password.value = settings.accounts.ticket_password;
         udn_password.value = settings.accounts.udn_password;
         cpbl_password.value = settings.accounts.cpbl_password || '';
@@ -1428,7 +1458,7 @@ function maxbot_reset_api()
         return;
     }
     let api_url = "/reset";
-    $.get( api_url, function() {
+    $.post( api_url, function() {
         //alert( "success" );
     })
     .done(function(data) {
@@ -1496,28 +1526,53 @@ function maxbot_launch()
 
 function do_launch(instance_override)
 {
+    const launchProfile = current_profile;
+    let prefill;
+    if (detectPlatform(homepage.value) === 'kham') {
+        const account = khamPrefillAccount.value.trim();
+        const password = khamPrefillPassword.value;
+        if (Boolean(account) !== Boolean(password)) {
+            message(currentLanguage === 'en'
+                ? 'Enter both KHAM fields or leave both empty.'
+                : '請填寫寬宏帳號及密碼，或將兩欄留空。');
+            return;
+        }
+        if (account) prefill = { account, password };
+    }
     run_message(uiText('launching'));
     if (!save_changes_to_dict(true)) return;
-    maxbot_save_api(function(){ maxbot_run_api(instance_override); });
+    maxbot_save_api(function() {
+        if (current_profile !== launchProfile) return;
+        clearKhamPrefill();
+        maxbot_run_api(instance_override, prefill);
+    });
 }
 
-function maxbot_run_api(instance_override)
+function clearKhamPrefill() {
+    khamPrefillAccount.value = '';
+    khamPrefillPassword.value = '';
+}
+
+window.addEventListener('pagehide', clearKhamPrefill);
+
+function maxbot_run_api(instance_override, prefill)
 {
     let api_url = "/run" + profile_query();
     if (instance_override) {
         api_url += (profile_query() ? '&' : '?') + 'instance=' + encodeURIComponent(instance_override);
     }
-    $.get( api_url, function() {
-        //alert( "success" );
+    $.ajax({
+        url: api_url,
+        method: 'POST',
+        contentType: 'application/json',
+        data: prefill ? JSON.stringify(prefill) : undefined
     })
     .done(function(data) {
         run_message(uiText('launch_sent'));
         console.log("[MaxBot] Launch API response:", data);
     })
     .fail(function(xhr, status, error) {
-        run_message(uiText('launch_failed', status));
-        console.error("[MaxBot] Launch API error:", status, error);
-        console.error("[MaxBot] Response content:", xhr.responseText);
+        run_message(xhr.responseJSON?.error || uiText('launch_failed', status));
     })
     .always(function() {
         //alert( "finished" );
@@ -1527,12 +1582,13 @@ function maxbot_run_api(instance_override)
 function maxbot_shutdown_api()
 {
     let api_url = "/shutdown";
-    $.get( api_url, function() {
+    $.post( api_url, function() {
         //alert( "success" );
     })
     .done(function(data) {
         //alert( "second success" );
-        window.close();
+        sessionStorage.removeItem(settingsSessionKey);
+        window.location.replace('about:blank');
     })
     .fail(function() {
         //alert( "error" );
@@ -1674,7 +1730,6 @@ function save_changes_to_dict(silent_flag)
             settings.accounts.facebook_account = facebook_account.value;
             settings.accounts.kktix_account = kktix_account.value;
             settings.accounts.fami_account = fami_account.value;
-            settings.accounts.kham_account = kham_account.value;
             settings.accounts.ticket_account = ticket_account.value;
             settings.accounts.udn_account = udn_account.value;
             settings.accounts.cpbl_account = cpbl_account.value;
@@ -1686,7 +1741,6 @@ function save_changes_to_dict(silent_flag)
             settings.accounts.facebook_password = facebook_password.value;
             settings.accounts.kktix_password = kktix_password.value;
             settings.accounts.fami_password = fami_password.value;
-            settings.accounts.kham_password = kham_password.value;
             settings.accounts.ticket_password = ticket_password.value;
             settings.accounts.udn_password = udn_password.value;
             settings.accounts.cpbl_password = cpbl_password.value;
@@ -1715,8 +1769,11 @@ function maxbot_save_api(callback)
 {
     let api_url = "/save" + profile_query();
     if(settings) {
-        $.post( api_url, JSON.stringify(settings), function() {
-            //alert( "success" );
+        $.ajax({
+            url: api_url,
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(settings)
         })
         .done(function(data) {
             console.log("[MaxBot] 設定儲存成功");
@@ -1738,7 +1795,7 @@ function maxbot_pause_api()
 {
     let api_url = "/pause" + profile_query();
     if(settings) {
-        $.get( api_url, function() {
+        $.post( api_url, function() {
             //alert( "success" );
         })
         .done(function(data) {
@@ -1757,7 +1814,7 @@ function maxbot_resume_api()
 {
     let api_url = "/resume" + profile_query();
     if(settings) {
-        $.get( api_url, function() {
+        $.post( api_url, function() {
             //alert( "success" );
         })
         .done(function(data) {
@@ -1814,7 +1871,6 @@ function check_unsaved_fields()
             "cityline_account",
             "urbtix_account",
             "hkticketing_account",
-            "kham_account",
             "ticket_account",
             "udn_account",
             "cpbl_account",
@@ -1824,7 +1880,6 @@ function check_unsaved_fields()
             "fami_password",
             "urbtix_password",
             "hkticketing_password",
-            "kham_password",
             "ticket_password",
             "udn_password",
             "cpbl_password",
@@ -2032,17 +2087,17 @@ function instances_dashboard_api() {
 }
 
 function instance_pause(id) {
-    $.get('/pause' + instance_query(id)).always(instances_dashboard_api);
+    $.post('/pause' + instance_query(id)).always(instances_dashboard_api);
 }
 
 function instance_resume(id) {
-    $.get('/resume' + instance_query(id)).always(instances_dashboard_api);
+    $.post('/resume' + instance_query(id)).always(instances_dashboard_api);
 }
 
 function instance_stop(id) {
     // Irreversible (closes the browser, ends the process) -> require confirmation.
     if (!window.confirm(uiText('stop_confirm', id))) return;
-    $.get('/stop' + instance_query(id)).always(instances_dashboard_api);
+    $.post('/stop' + instance_query(id)).always(instances_dashboard_api);
 }
 
 function pause_all_instances() {
@@ -2051,7 +2106,7 @@ function pause_all_instances() {
     $.get('/instances').done(function(data) {
         const rows = (data && data.instances) ? data.instances : [];
         rows.filter(function(it){ return it.alive && !it.paused; })
-            .forEach(function(it){ $.get('/pause' + instance_query(it.id)); });
+            .forEach(function(it){ $.post('/pause' + instance_query(it.id)); });
         setTimeout(instances_dashboard_api, 300);
     });
 }
@@ -2305,7 +2360,15 @@ function refresh_question_instance_options(rows) {
 async function checkDetectedQuestion() {
     try {
         const target_query = question_target_instance ? instance_query(question_target_instance) : profile_query();
-        const response = await fetch('/question' + target_query);
+        const token = sessionStorage.getItem(settingsSessionKey);
+        if (!token) return;
+        const response = await fetch('/question' + target_query, {
+            headers: { Authorization: 'Bearer ' + token }
+        });
+        if (response.status === 401) {
+            requireSettingsUnlock();
+            return;
+        }
         const data = await response.json();
 
         const alertElement = document.getElementById('detected-question-alert');

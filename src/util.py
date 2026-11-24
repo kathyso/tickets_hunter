@@ -7,6 +7,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from typing import Optional
@@ -256,12 +257,18 @@ def is_text_match_keyword(keyword_string, text, config_dict=None):
     return is_match_keyword
 
 def save_json(config_dict, target_path):
-    json_str = json.dumps(config_dict, indent=4)
+    # Write with owner-only permissions and publish the completed file atomically.
+    directory = os.path.dirname(os.path.abspath(target_path))
+    descriptor, temporary_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
-        with open(target_path, 'w') as outfile:
-            outfile.write(json_str)
-    except Exception as e:
-        pass
+        with os.fdopen(descriptor, "w", encoding="utf-8") as outfile:
+            json.dump(config_dict, outfile, indent=4)
+            outfile.flush()
+            os.fsync(outfile.fileno())
+        os.replace(temporary_path, target_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 def write_string_to_file(filename, data):
     outfile = None
@@ -2109,7 +2116,7 @@ def kktix_get_event_code(url):
     #print('event_code:',event_code)
     return event_code
 
-def launch_maxbot(script_name="nodriver_tixcraft", filename="", homepage="", kktix_account = "", kktix_password="", window_size="", headless="", instance=""):
+def launch_maxbot(script_name="nodriver_tixcraft", filename="", homepage="", kktix_account = "", kktix_password="", window_size="", headless="", instance="", *, extra_args=(), stdin_payload=None):
     cmd_argument = []
     if len(filename) > 0:
         cmd_argument.append('--input=' + filename)
@@ -2126,6 +2133,7 @@ def launch_maxbot(script_name="nodriver_tixcraft", filename="", homepage="", kkt
         cmd_argument.append('--window_size=' + window_size)
     if len(headless) > 0:
         cmd_argument.append('--headless=' + headless)
+    cmd_argument.extend(extra_args)
 
     working_dir = get_app_root()
     if hasattr(sys, 'frozen'):
@@ -2145,19 +2153,17 @@ def launch_maxbot(script_name="nodriver_tixcraft", filename="", homepage="", kkt
         # needs an absolute path: cwd= sets the child's directory but does not
         # affect how the executable itself is resolved.
         binary_path = os.path.join(working_dir, binary_name)
-        subprocess.Popen([binary_path] + cmd_argument, cwd=working_dir)
+        command = [binary_path] + cmd_argument
     else:
-        interpreter_binary = sys.executable
         print("execute in shell mode.")
+        command = [sys.executable, script_name + '.py'] + cmd_argument
 
-        try:
-            print('try', interpreter_binary)
-            cmd_array = [interpreter_binary, script_name + '.py'] + cmd_argument
-            s=subprocess.Popen(cmd_array, cwd=working_dir)
-        except Exception as exc:
-            msg=str(exc)
-            print("exeption:", msg)
-            pass
+    if stdin_payload is None:
+        subprocess.Popen(command, cwd=working_dir)
+    else:
+        child = subprocess.Popen(command, cwd=working_dir, stdin=subprocess.PIPE)
+        with child.stdin as pipe:
+            pipe.write(stdin_payload)
 
 def parse_nodriver_result(result):
     """

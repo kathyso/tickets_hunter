@@ -72,7 +72,7 @@ python settings.py
 cd tickets_hunter/src
 python settings.py
 ```
-瀏覽器會自動開啟網頁介面：`http://127.0.0.1:16888/`
+先在終端機設定本次啟動的本機解鎖密語。瀏覽器開啟設定介面後，請用同一組密語解鎖。請勿使用票務帳號的密碼。
 
 > 💡 若 Port 被佔用無法開啟，請參考[設定介面 Port 說明](settings-guide.md#設定介面-portserver_port-v202512-新增)
 
