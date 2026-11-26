@@ -63,6 +63,38 @@ python settings.py
 
 ---
 
+## Virtual environment
+### One-time setup (project root)
+
+```bash
+cd tickets_hunter
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirement.txt
+```
+
+After `source .venv/bin/activate`, your prompt usually shows `(.venv)`. Then `pip` and `python` point at that environment only.
+
+### Each new terminal session
+```bash
+cd tickets_hunter
+source .venv/bin/activate
+cd src
+python settings.py
+```
+
+### To leave the venv
+```bash
+deactivate
+```
+
+### Stop
+```bash
+pkill -f nodriver_tixcraft.py
+```
+
+---
+
 ## 🚀 第一次使用流程
 
 ### 步驟 1：開啟設定介面
